@@ -11,7 +11,7 @@
 
 ## Fail closed
 
-If attestation returns no `proofId`, throws, or `gate_tool_call` denies, do not proceed with deploy or payment.
+If `gate.allowed` is false, the call throws, or `gate_tool_call` denies, do not proceed with deploy or payment.
 
 ## Privacy
 

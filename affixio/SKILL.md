@@ -66,31 +66,43 @@ Claude Desktop / Cursor-style MCP config:
 ## SDK path (handlers and scripts)
 
 ```bash
-npm i @affixio/sdk
+npm i affixio@2.0.3
 ```
 
-```ts
-import { AffixIO } from "@affixio/sdk";
+```js
+import { AffixSDK, mcpToolGate, spendingPolicy } from "affixio";
 
-const affixio = new AffixIO({ apiKey: process.env.AFFIX_API_KEY! });
+// Offline: licenceOnly, no network calls. HMAC proof in an ML-DSA-65 signed envelope.
+const sdk = new AffixSDK({ apiKey: process.env.AFFIX_API_KEY ?? "aio_demo", licenceOnly: true, autoFlush: false });
+// Currency must be a 3-letter code, so USDC amounts are gated as USD.
+const policy = spendingPolicy().currency("USD").maxPerAction(1);
 
-// Before deploy
-const deployProof = await affixio.attest({ action: "bankr.x402.deploy" });
-if (!deployProof?.proofId) throw new Error("affixio: deploy attestation failed");
+async function gateX402(tool, amount) {
+  const gate = await mcpToolGate({ sdk, policy, tool, agentId: "agent://bankr", amount });
+  if (!gate.allowed) throw new Error(`affixio: ${tool} denied (${gate.reason})`);
+  return gate.receipt; // proof_id, proof_digest, decision, reason
+}
 
-// Before a paid call
-const callProof = await affixio.attest({ action: "bankr.x402.call" });
-if (!callProof?.proofId) throw new Error("affixio: call attestation failed");
+await gateX402("bankr.x402.deploy", 0);    // before bankr x402 deploy
+await gateX402("bankr.x402.call", 0.05);   // before a paid call
 ```
 
-Optional: attach `proofId` to your endpoint metadata or logs so settlement can be tied to the attestation.
+Output on affixio 2.0.3, Node 20, networking disabled (proof ids change per run):
+
+```text
+bankr.x402.deploy 0 USD -> ALLOW
+bankr.x402.call 0.05 USD -> ALLOW
+bankr.x402.call 5 USD -> DENY (amount_above_max_per_action)
+```
+
+Check `gate.allowed`, not just that a proof exists. A deny still returns a signed proof. Keep `gate.receipt` with your logs so settlement can be tied to the decision. HMAC mode is not zero-knowledge, and HMAC proofs should only be verified by trusted servers holding the secret. In production pass `hmacSecret`/`signingKeys` so proofs can be checked after a restart.
 
 ---
 
 ## Recommended agent flow
 
 1. User asks to deploy or call an x402 endpoint.
-2. **Attest first** (`attest_action` / `AffixIO.attest`) with a concrete action string (`bankr.x402.deploy`, `bankr.x402.call`, `bankr.x402.env.set`).
+2. **Attest first** (`attest_action` / `mcpToolGate`) with a concrete action string (`bankr.x402.deploy`, `bankr.x402.call`, `bankr.x402.env.set`).
 3. On deny or verify failure → **stop**. Do not deploy, call, or pay.
 4. On allow → run the Bankr CLI / agent step (`bankr x402 deploy`, `bankr x402 call … --yes` only after user payment confirmation).
 5. Keep tool args hashed or summarized. Never paste secrets, private keys, or PII into AffixIO prompts.
